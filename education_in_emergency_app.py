@@ -7,7 +7,7 @@ from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from flask_jwt_extended import (
-    JWTManager, create_access_token, jwt_required, get_jwt_identity, get_jwt
+    JWTManager, create_access_token, jwt_required, get_jwt_identity
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 from docx import Document
@@ -32,7 +32,7 @@ class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
-    role = db.Column(db.String(20), nullable=False, default='student')  # 'student' or 'teacher'
+    role = db.Column(db.String(20), nullable=False, default='student')
     full_name = db.Column(db.String(120), nullable=True)
     grade = db.Column(db.String(50), nullable=True)
     section = db.Column(db.String(50), nullable=True)
@@ -185,6 +185,11 @@ def seed_default_data():
 
     db.session.commit()
 
+# Ensure tables exist at startup
+with app.app_context():
+    db.create_all()
+    seed_default_data()
+
 # ==============================================================================
 # REST API ENDPOINTS
 # ==============================================================================
@@ -203,14 +208,17 @@ def login():
 @app.route('/api/auth/register-student', methods=['POST'])
 def register_student():
     data = request.json or {}
-    name = data.get('name', '').strip()
+    name = (data.get('name') or '').strip()
     grade = data.get('grade', 'Grade 7')
-    section = data.get('section', 'Section A').strip()
+    section = (data.get('section') or 'Section A').strip()
 
     if not name:
         return jsonify({"msg": "Student name is required"}), 400
 
-    username = re.sub(r'[^a-zA-Z0-9]', '', name.lower()) + "_" + re.sub(r'[^a-zA-Z0-9]', '', section.lower())
+    clean_name = re.sub(r'[^a-zA-Z0-9]', '', name.lower())
+    clean_sec = re.sub(r'[^a-zA-Z0-9]', '', section.lower())
+    username = f"{clean_name}_{clean_sec}" if clean_sec else clean_name
+
     user = User.query.filter_by(username=username).first()
     
     if not user:
@@ -225,6 +233,7 @@ def register_student():
         db.session.add(user)
         db.session.commit()
     else:
+        user.full_name = name
         user.grade = grade
         user.section = section
         db.session.commit()
@@ -756,13 +765,27 @@ async function saveStudentSession() {
  const section = $('section').value.trim();
  if (!name) return alert('Enter full name');
  
- const res = await api('/api/auth/register-student', 'POST', {name, grade, section});
- jwtToken = res.token;
- currentUser = {id: res.student_id, name: res.name, role: 'student'};
- localStorage.setItem('token', jwtToken);
- localStorage.setItem('user', JSON.stringify(currentUser));
- updateAuthUI();
- alert('Session Saved & Authenticated!');
+ localStorage.removeItem('token');
+ localStorage.removeItem('user');
+ jwtToken = '';
+
+ const res = await fetch('/api/auth/register-student', {
+  method: 'POST',
+  headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({name, grade, section})
+ });
+ 
+ const data = await res.json();
+ if(res.ok) {
+  jwtToken = data.token;
+  currentUser = {id: data.student_id, name: data.name, role: 'student'};
+  localStorage.setItem('token', jwtToken);
+  localStorage.setItem('user', JSON.stringify(currentUser));
+  updateAuthUI();
+  alert('Session Saved & Authenticated!');
+ } else {
+  alert(data.msg || 'Registration failed');
+ }
 }
 
 async function loginTeacher() {
@@ -1041,7 +1064,4 @@ def index():
 # MAIN ENTRYPOINT
 # ==============================================================================
 if __name__ == '__main__':
-    with app.app_context():
-        db.create_all()
-        seed_default_data()
     app.run(debug=True, host='0.0.0.0', port=5000)
